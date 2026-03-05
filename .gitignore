@@ -1,0 +1,11 @@
+context.md
+.env
+.venv
+__pycache__
+*.pyc
+*.wav
+*.mkv
+results/
+results/*
+venv/
+venv/*

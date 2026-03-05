@@ -28,3 +28,8 @@ jsonschema==4.22.0
 tqdm==4.67.1
 filelock>=3.12.2
 huggingface-hub==0.36.0
+
+
+ fastapi 
+ uvicorn 
+ pydantic

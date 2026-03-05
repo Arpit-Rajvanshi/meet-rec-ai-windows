@@ -12,6 +12,7 @@ Only GPU work happens on RunPod. Everything else is local and easily changeable.
 """
 
 import os
+import requests 
 import json
 import time
 import base64
@@ -350,6 +351,31 @@ def process_video(
                 print(f"\n🧹 Cleaned up: {temp_audio_path}")
             except Exception as e:
                 print(f"⚠️  Could not remove {temp_audio_path}: {e}")
+
+def process_video_from_url(video_id: str, s3_url: str) -> dict:
+    print(f"\n☁️ Downloading video {video_id} from cloud storage...")
+    temp_video_path = f"temp_video_{video_id}.mp4" 
+    
+    try:
+        response = requests.get(s3_url, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        with open(temp_video_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        print(f"✅ Download complete: {temp_video_path}")
+        result = process_video(temp_video_path)
+        return result
+        
+    except Exception as e:
+        print(f"❌ Cloud processing failed for {video_id}: {str(e)}")
+        raise e
+        
+    finally:
+        if os.path.exists(temp_video_path):
+            os.remove(temp_video_path)
+            print(f"🧹 Cleaned up temporary cloud file: {temp_video_path}")
 
 
 # ==========================================
