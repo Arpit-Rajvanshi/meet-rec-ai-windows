@@ -1,41 +1,51 @@
-# ==========================================
-# RunPod Handler
-# Optimized for Size (Runtime Base)
-# ==========================================
+# =========================================
+# Meet Recorder - Full Pipeline GPU Image
+#   Whisper + Pyannote + SpeechBrain (ECAPA-TDNN)
+#   R2 upload/download, transcript.txt output
+# =========================================
 
-# 1. Use the Runtime image with Torch 2.2.2 pre-installed
-# This matches your requirements.txt exactly, so no re-downloading!
 FROM pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
 
 WORKDIR /app
 
-# 2. System Dependencies
-# DEBIAN_FRONTEND prevents the time zone prompt that freezes builds
+# ----- System deps -----
 RUN export DEBIAN_FRONTEND=noninteractive && \
     apt-get update && \
-    apt-get install -y \
-    git \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+        git \
+        ffmpeg \
+        ca-certificates \
+        && rm -rf /var/lib/apt/lists/*
 
-# 3. Python Dependencies
+# ----- Python deps -----
 COPY requirements.txt .
-
-# Upgrade pip and install requirements
-# --no-cache-dir reduces image size by not saving downloaded wheels
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir "filelock>=3.12.2" && \
     pip install --no-cache-dir -r requirements.txt
 
-# 4. Copy Code
-COPY transcription.py .
-COPY diarize.py .
-COPY runpod_handler.py .
+# ----- Application code -----
+# Core pipeline modules
+COPY transcription.py        .
+COPY diarize.py              .
+COPY media_io.py             .
+COPY speaker_mapper_voice.py .
+COPY transcript_writer.py    .
+COPY r2_client.py            .
+COPY runpod_handler.py       .
 
-# 5. Environment Config
+# Baked-in biometric enrollment DB
+# (Temporary: will be loaded from intranet/R2 in a future iteration)
+COPY seed_data.json          .
+
+# ----- Runtime env -----
 ENV PYTHONUNBUFFERED=1
+# Persistent volume on RunPod for model caches
 ENV HF_HOME=/runpod-volume/huggingface
 ENV TORCH_HOME=/runpod-volume/torch
+# SpeechBrain cache (also lands on persistent volume)
+ENV SPEECHBRAIN_CACHE=/runpod-volume/speechbrain/spkrec-ecapa-voxceleb
+# Default seed DB location inside the image
+ENV SEED_DB_PATH=/app/seed_data.json
 
-# 6. Start
+# ----- Start -----
 CMD ["python", "-u", "runpod_handler.py"]

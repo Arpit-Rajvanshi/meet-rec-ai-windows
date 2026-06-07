@@ -1,15 +1,15 @@
 #!/bin/bash
 
 # ==========================================
-# RunPod Deployment
-# Only Transcription + Diarization
+# Meet Recorder - Full Pipeline RunPod Deploy
+# Whisper + Pyannote + SpeechBrain in one image
 # ==========================================
 
 set -e
 
 echo "========================================"
-echo "RunPod Deployment"
-echo "GPU: Transcription + Diarization Only"
+echo "Meet Recorder Deployment"
+echo "Full Pipeline: Whisper + Pyannote + SpeechBrain"
 echo "========================================"
 echo ""
 
@@ -17,9 +17,9 @@ echo ""
 # CONFIGURATION
 # ==========================================
 
-DOCKER_USERNAME="ayushk1503"
-IMAGE_NAME="meeting-transcription"
-IMAGE_TAG="v2.1"
+DOCKER_USERNAME="${DOCKER_USERNAME:-mannoyed}"
+IMAGE_NAME="${IMAGE_NAME:-meet-recorder}"
+IMAGE_TAG="${IMAGE_TAG:-v3.0-full-pipeline}"
 
 FULL_IMAGE_NAME="${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}"
 
@@ -31,26 +31,30 @@ echo "Validating prerequisites..."
 echo ""
 
 if ! command -v docker &> /dev/null; then
-    echo "❌ Docker not found"
+    echo "Docker not found"
     exit 1
 fi
-echo "✅ Docker found"
+echo "Docker found"
 
-# Check required files
 REQUIRED_FILES=(
     "Dockerfile"
     "requirements.txt"
     "runpod_handler.py"
     "transcription.py"
     "diarize.py"
+    "media_io.py"
+    "speaker_mapper_voice.py"
+    "transcript_writer.py"
+    "r2_client.py"
+    "seed_data.json"
 )
 
 for file in "${REQUIRED_FILES[@]}"; do
     if [ ! -f "$file" ]; then
-        echo "❌ Required file not found: $file"
+        echo "Required file not found: $file"
         exit 1
     fi
-    echo "✅ Found: $file"
+    echo "Found: $file"
 done
 
 echo ""
@@ -71,7 +75,7 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-echo "🔨 Building..."
+echo "Building..."
 echo ""
 
 docker build \
@@ -83,10 +87,10 @@ docker build \
 
 if [ $? -eq 0 ]; then
     echo ""
-    echo "✅ Build successful!"
+    echo "Build successful!"
 else
     echo ""
-    echo "❌ Build failed!"
+    echo "Build failed!"
     exit 1
 fi
 
@@ -103,19 +107,19 @@ read -p "Push now? (y/n): " -n 1 -r
 echo ""
 
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "📤 Pushing..."
+    echo "Pushing..."
     echo ""
-    
+
     docker push ${FULL_IMAGE_NAME}
-    
+
     if [ $? -eq 0 ]; then
         echo ""
-        echo "✅ Push successful!"
+        echo "Push successful!"
         echo ""
         echo "Image: $FULL_IMAGE_NAME"
     else
         echo ""
-        echo "❌ Push failed!"
+        echo "Push failed!"
         exit 1
     fi
 fi
@@ -126,43 +130,57 @@ echo ""
 # INSTRUCTIONS
 # ==========================================
 
-echo "========================================"
-echo "✅ DEPLOYMENT READY"
-echo "========================================"
-echo ""
-echo "Docker image: $FULL_IMAGE_NAME"
-echo ""
-echo "NEXT STEPS:"
-echo ""
-echo "1. Go to: https://www.runpod.io/console/serverless"
-echo ""
-echo "2. Create endpoint:"
-echo "   - Name: transcription-diarization"
-echo "   - Image: $FULL_IMAGE_NAME"
-echo "   - GPU: RTX 3090 / RTX 4090"
-echo "   - Container Disk: 30GB  (smaller!)"
-echo "   - Volume: 30GB at /runpod-volume"
-echo ""
-echo "3. Environment variables:"
-echo "   - HF_TOKEN=your-huggingface-token"
-echo ""
-echo "4. Scaling:"
-echo "   - Min Workers: 0"
-echo "   - Max Workers: 3"
-echo "   - Idle Timeout: 5s"
-echo "   - Execution Timeout: 600s"
-echo ""
-echo "5. On your server:"
-echo "   - Set RUNPOD_API_KEY in .env"
-echo "   - Set RUNPOD_ENDPOINT_ID in .env"
-echo "   - Run: python orchestrator_modular.py video.mp4"
-echo ""
-echo "========================================"
-echo ""
+cat <<EOF
+========================================
+DEPLOYMENT READY
+========================================
 
-echo "Benefits of this setup:"
-echo "  ✅ Smaller Docker image (~5GB vs ~10GB)"
-echo "  ✅ Faster cold starts (~30s vs ~60s)"
-echo "  ✅ Change OCR/analysis without rebuild"
-echo "  ✅ Lower GPU costs (only 3-4 min per video)"
-echo ""
+Docker image: $FULL_IMAGE_NAME
+
+NEXT STEPS:
+
+1. Go to: https://www.runpod.io/console/serverless
+
+2. Create or update the endpoint:
+   - Image:             $FULL_IMAGE_NAME
+   - GPU:               RTX 3090 / RTX 4090
+   - Container Disk:    30 GB
+   - Volume:            30 GB at /runpod-volume
+   - Min Workers:       0
+   - Max Workers:       3
+   - Idle Timeout:      5 s
+   - Execution Timeout: 3600 s    (1 hour - covers 2hr meetings)
+
+3. Required env vars on the RunPod endpoint:
+   - HF_TOKEN                 (Hugging Face, for Pyannote 3.1)
+   - R2_ACCESS_KEY_ID         (Cloudflare R2)
+   - R2_SECRET_ACCESS_KEY     (Cloudflare R2)
+   - R2_BUCKET                (default: meet-recorder)
+   - R2_ENDPOINT_URL          (https://<account-id>.r2.cloudflarestorage.com)
+
+   Optional:
+   - R2_AUDIO_PREFIX          (default: audios)
+   - R2_TRANSCRIPT_PREFIX     (default: transcripts)
+   - R2_PRESIGN_EXPIRY        (default: 604800 seconds / 7 days)
+   - SEED_DB_PATH             (default: /app/seed_data.json)
+
+4. Invoke the endpoint with one of:
+     {"input": {"video_url":   "https://..."}}
+     {"input": {"audio_url":   "https://..."}}     # WAV preferred
+     {"input": {"audio_base64": "..."}}            # legacy, <10 MB only
+
+   Optional fields:
+     meeting_id, min_speakers, max_speakers, num_speakers,
+     upload_audio_to_r2 (default true), upload_transcript_to_r2 (default true),
+     return_transcript_inline (default true)
+
+5. Response includes:
+   - transcript_text   (inline transcript.txt)
+   - transcript_url    (pre-signed R2 URL)
+   - audio_url         (pre-signed R2 URL)
+   - speaker_mapping   (SPEAKER_XX -> real name)
+   - transcript_segments
+   - metadata          (durations, counts, timings)
+
+========================================
+EOF

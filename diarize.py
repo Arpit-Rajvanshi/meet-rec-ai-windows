@@ -1,192 +1,194 @@
 """
-Diarization Module - MINIMAL GPU ONLY (for RunPod)
+Speaker diarization with Pyannote 3.1.
 
-ONLY contains GPU functions:
-- run_pyannote() - Speaker diarization
-- assign_speakers_to_transcript() - Merge with transcription
+Public API:
+    run_pyannote(audio_path, num_speakers=None, min_speakers=None, max_speakers=None)
+    assign_speakers_to_transcript(whisper_segments, pyannote_segments)
 
-NO utilities, NO concatenation, NO formatting.
-All post-processing happens on your server.
+The run_pyannote call frees the Whisper model (if loaded by transcription.py)
+BEFORE loading the Pyannote pipeline. This prevents holding both ~3GB Whisper
+weights and ~1GB Pyannote weights on the GPU simultaneously, which was a
+contributing factor to OOM/long-runtime failures on long audio.
 """
 
-import os
-import torch
+from __future__ import annotations
+
 import gc
 import logging
-from pyannote.audio import Pipeline
+import os
+from typing import Dict, List, Optional
+
+import torch
 from dotenv import load_dotenv
-from typing import List, Dict
+from pyannote.audio import Pipeline
 
-load_dotenv()
 logger = logging.getLogger(__name__)
+load_dotenv()
 
-IS_RUNPOD = os.getenv('RUNPOD_POD_ID') is not None
 
+IS_RUNPOD = os.getenv("RUNPOD_POD_ID") is not None
 if IS_RUNPOD:
-    os.environ['HF_HOME'] = '/runpod-volume/huggingface'
-    os.environ['TORCH_HOME'] = '/runpod-volume/torch'
-    print("🔧 RunPod environment detected - using persistent volume for model cache")
+    os.environ["HF_HOME"] = "/runpod-volume/huggingface"
+    os.environ["TORCH_HOME"] = "/runpod-volume/torch"
+    logger.info("RunPod environment detected - using persistent volume for model cache")
 
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-# =============================
-# GPU FUNCTION 1: PYANNOTE DIARIZATION
-# =============================
 
-def run_pyannote(audio_path, num_speakers=None, min_speakers=None, max_speakers=None):
+def _free_whisper_before_pyannote() -> None:
     """
-    Runs Pyannote speaker diarization on GPU.
-    Returns segments with FLOAT timestamps and SPEAKER_XX labels.
-    
-    Args:
-        audio_path: Path to audio file
-        num_speakers: Exact number of speakers (optional)
-        min_speakers: Minimum speakers (optional)
-        max_speakers: Maximum speakers (optional)
-        
-    Returns:
-        List of dicts: [{"start": 0.0, "end": 5.2, "speaker": "SPEAKER_00"}]
+    Best-effort: ask transcription.py to release Whisper before we load Pyannote.
+    Silent if transcription is not imported.
     """
-    print(f"🗣️  Loading Pyannote Diarization...")
-    
-    if num_speakers:
-        print(f"   🎯 Constraining to exactly {num_speakers} speaker(s)")
-    elif min_speakers or max_speakers:
-        constraint_msg = []
-        if min_speakers:
-            constraint_msg.append(f"min={min_speakers}")
-        if max_speakers:
-            constraint_msg.append(f"max={max_speakers}")
-        print(f"   🎯 Speaker range: {', '.join(constraint_msg)}")
-    
+    try:
+        import transcription
+        transcription.unload_model()
+    except Exception as e:
+        logger.debug(f"Could not unload Whisper before Pyannote (non-fatal): {e}")
+
+
+def _load_pipeline(token: str) -> Pipeline:
+    """Try the three known auth methods across pyannote versions."""
+    try:
+        return Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            token=token,
+        )
+    except TypeError:
+        pass
+    try:
+        return Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=token,
+        )
+    except TypeError:
+        pass
+    os.environ["HUGGING_FACE_HUB_TOKEN"] = token
+    return Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+
+
+def run_pyannote(
+    audio_path: str,
+    num_speakers: Optional[int] = None,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
+) -> List[Dict]:
+    """
+    Run Pyannote 3.1 diarization on a WAV file.
+
+    Returns a list of {"start", "end", "speaker"} dicts. Speakers are anonymous
+    SPEAKER_00, SPEAKER_01, ... labels; resolve them later with biometric mapping.
+    """
     if not HF_TOKEN:
-        raise ValueError("❌ HF_TOKEN is missing! Pyannote requires Hugging Face token.")
+        raise ValueError("HF_TOKEN is missing! Pyannote 3.1 requires a Hugging Face token.")
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+    if num_speakers:
+        logger.info(f"Pyannote: constraining to exactly {num_speakers} speaker(s)")
+    elif min_speakers or max_speakers:
+        logger.info(f"Pyannote: speaker range min={min_speakers} max={max_speakers}")
+    else:
+        logger.info("Pyannote: auto-detecting speakers")
+
+    # Free Whisper VRAM before we allocate Pyannote's
+    _free_whisper_before_pyannote()
 
     pipeline = None
     try:
-        # Try different authentication methods (different pyannote versions)
-        pipeline = None
-        auth_error = None
-        
-        # Try method 1: token parameter (newest versions)
-        try:
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                token=HF_TOKEN
-            )
-        except TypeError as e1:
-            auth_error = e1
-            # Try method 2: use_auth_token parameter (older versions)
-            try:
-                pipeline = Pipeline.from_pretrained(
-                    "pyannote/speaker-diarization-3.1",
-                    use_auth_token=HF_TOKEN
-                )
-            except TypeError as e2:
-                # Try method 3: environment variable (fallback)
-                os.environ['HUGGING_FACE_HUB_TOKEN'] = HF_TOKEN
-                try:
-                    pipeline = Pipeline.from_pretrained(
-                        "pyannote/speaker-diarization-3.1"
-                    )
-                except Exception as e3:
-                    raise Exception(f"All authentication methods failed. Errors: token={e1}, use_auth_token={e2}, env={e3}")
-        
+        pipeline = _load_pipeline(HF_TOKEN)
         if pipeline is None:
-            raise Exception("Failed to load Pyannote pipeline")
-        
+            raise RuntimeError("Failed to load Pyannote pipeline")
+
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         pipeline.to(device)
 
-        # Run inference
         diarization = pipeline(
-            audio_path, 
+            audio_path,
             num_speakers=num_speakers,
             min_speakers=min_speakers,
-            max_speakers=max_speakers
+            max_speakers=max_speakers,
         )
-        
-        speaker_segments = []
+
+        speaker_segments: List[Dict] = []
         unique_speakers = set()
-        
         for turn, _, speaker in diarization.itertracks(yield_label=True):
             speaker_segments.append({
                 "start": float(turn.start),
                 "end": float(turn.end),
-                "speaker": str(speaker)
+                "speaker": str(speaker),
             })
             unique_speakers.add(str(speaker))
-        
-        print(f"✅ Pyannote finished. Found {len(speaker_segments)} segments across {len(unique_speakers)} speaker(s).")
-        
+
+        logger.info(
+            f"Pyannote done: {len(speaker_segments)} segments, "
+            f"{len(unique_speakers)} unique speakers"
+        )
         if num_speakers and len(unique_speakers) != num_speakers:
-            print(f"   ⚠️  Warning: Expected {num_speakers} speakers but detected {len(unique_speakers)}")
-        
+            logger.warning(
+                f"Expected {num_speakers} speakers, detected {len(unique_speakers)}"
+            )
         return speaker_segments
 
     except Exception as e:
-        print(f"❌ Pyannote failed: {e}")
-        logger.error(f"Pyannote error details: {e}", exc_info=True)
+        logger.error(f"Pyannote failed: {e}", exc_info=True)
         return []
-    
+
     finally:
-        # Free GPU memory
-        print("🗑️  Unloading Pyannote...")
+        # Release Pyannote VRAM/RAM as soon as we're done
+        logger.info("Unloading Pyannote pipeline...")
         if pipeline is not None:
-            del pipeline
+            try:
+                del pipeline
+            except Exception:
+                pass
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
 
-# =============================
-# GPU FUNCTION 2: MERGE TRANSCRIPTION + DIARIZATION
-# =============================
+def assign_speakers_to_transcript(
+    whisper_segments: List[Dict],
+    pyannote_segments: List[Dict],
+) -> List[Dict]:
+    """
+    Merge Whisper transcription with Pyannote speaker labels by max-overlap.
 
-def assign_speakers_to_transcript(whisper_segments, pyannote_segments):
+    For each Whisper segment, find the Pyannote segment with the most
+    time-overlap and tag the Whisper segment with that speaker.
     """
-    Merges Whisper transcription with Pyannote speaker labels.
-    
-    Args:
-        whisper_segments: List from Whisper [{"start": 0.0, "end": 5.2, "text": "..."}]
-        pyannote_segments: List from Pyannote [{"start": 0.0, "end": 5.2, "speaker": "SPEAKER_00"}]
-        
-    Returns:
-        Merged list: [{"start": 0.0, "end": 5.2, "speaker": "SPEAKER_00", "text": "..."}]
-    """
-    final_transcript = []
-    
+    final_transcript: List[Dict] = []
+
     for text_seg in whisper_segments:
-        # Ensure timestamps are float
         try:
-            tStart = float(text_seg['start'])
-            tEnd = float(text_seg['end'])
+            tStart = float(text_seg["start"])
+            tEnd = float(text_seg["end"])
         except (ValueError, TypeError, KeyError):
-            tStart = float(text_seg.get('start', 0))
-            tEnd = float(text_seg.get('end', tStart + 3))
-        
-        # Find best matching speaker based on overlap
-        speaker_counts = {}
-        for pa_seg in pyannote_segments:
-            pa_start = float(pa_seg['start'])
-            pa_end = float(pa_seg['end'])
-            
-            overlap_start = max(tStart, pa_start)
-            overlap_end = min(tEnd, pa_end)
-            overlap_duration = max(0, overlap_end - overlap_start)
-            
-            if overlap_duration > 0:
-                spk = pa_seg['speaker']
-                speaker_counts[spk] = speaker_counts.get(spk, 0) + overlap_duration
+            tStart = float(text_seg.get("start", 0))
+            tEnd = float(text_seg.get("end", tStart + 3))
 
-        best_speaker = max(speaker_counts, key=speaker_counts.get) if speaker_counts else "UNKNOWN_SPEAKER"
+        # Score each Pyannote speaker by overlap duration with this text segment
+        speaker_counts: Dict[str, float] = {}
+        for pa_seg in pyannote_segments:
+            pa_start = float(pa_seg["start"])
+            pa_end = float(pa_seg["end"])
+            overlap = max(0.0, min(tEnd, pa_end) - max(tStart, pa_start))
+            if overlap > 0:
+                spk = pa_seg["speaker"]
+                speaker_counts[spk] = speaker_counts.get(spk, 0.0) + overlap
+
+        best_speaker = (
+            max(speaker_counts, key=speaker_counts.get)
+            if speaker_counts
+            else "UNKNOWN_SPEAKER"
+        )
 
         final_transcript.append({
             "start": tStart,
             "end": tEnd,
             "speaker": best_speaker,
-            "text": text_seg.get('text', '')
+            "text": text_seg.get("text", ""),
         })
-    
-    print(f"✅ Merged {len(final_transcript)} transcript segments with speakers")
+
+    logger.info(f"Merged {len(final_transcript)} transcript segments with speakers")
     return final_transcript
