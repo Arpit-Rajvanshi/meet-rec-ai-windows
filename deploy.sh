@@ -10,6 +10,7 @@ set -e
 echo "========================================"
 echo "Meet Recorder Deployment"
 echo "Full Pipeline: Whisper + Pyannote + SpeechBrain"
+echo "Dockerfile: ${DOCKERFILE:-Dockerfile.runpod}"
 echo "========================================"
 echo ""
 
@@ -19,7 +20,16 @@ echo ""
 
 DOCKER_USERNAME="${DOCKER_USERNAME:-mannoyed}"
 IMAGE_NAME="${IMAGE_NAME:-meet-recorder}"
-IMAGE_TAG="${IMAGE_TAG:-v3.0-full-pipeline}"
+
+# Use Dockerfile.runpod (RunPod base, ~200-400 MB push) by default.
+# Override with: DOCKERFILE=Dockerfile IMAGE_TAG=v3.0-full-pipeline ./deploy.sh
+DOCKERFILE="${DOCKERFILE:-Dockerfile.runpod}"
+
+if [ "$DOCKERFILE" = "Dockerfile.runpod" ]; then
+    IMAGE_TAG="${IMAGE_TAG:-v4.0-runpod-base}"
+else
+    IMAGE_TAG="${IMAGE_TAG:-v3.0-full-pipeline}"
+fi
 
 FULL_IMAGE_NAME="${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}"
 
@@ -75,14 +85,14 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-echo "Building..."
+echo "Building with: $DOCKERFILE"
 echo ""
 
 docker build \
     --platform linux/amd64 \
-    -f Dockerfile \
-    -t ${IMAGE_NAME}:${IMAGE_TAG} \
-    -t ${FULL_IMAGE_NAME} \
+    -f "${DOCKERFILE}" \
+    -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+    -t "${FULL_IMAGE_NAME}" \
     .
 
 if [ $? -eq 0 ]; then

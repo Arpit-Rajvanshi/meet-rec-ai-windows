@@ -1,33 +1,49 @@
-# Core
+# =============================================
+# meet-recorder RunPod GPU image requirements
+# torch 2.2.2 + torchaudio 2.2.2 are already
+# in the pytorch/pytorch base image — NOT listed
+# here to avoid a redundant 2.5 GB re-download.
+# =============================================
+
+# --- RunPod runtime ---
 runpod==1.6.2
 
-# Environment
+# --- Env ---
 python-dotenv==1.1.1
 
-# Audio I/O
+# --- Audio I/O ---
 soundfile==0.13.1
-ffmpeg-python==0.2.0
+# ffmpeg binary installed via apt; ffmpeg-python
+# only needed if we call its Python API directly —
+# we use subprocess, so skip it
 
-# Transcription (faster-whisper only; openai-whisper removed - was unused)
+# --- Whisper transcription ---
 faster-whisper==1.2.1
-# torch / torchaudio provided by the base PyTorch Docker image
+# ctranslate2 is pulled as a dep of faster-whisper
 
-# Speaker Diarization
+# --- Speaker diarization ---
+# Only core + audio are needed at runtime.
+# pyannote.database / pyannote.metrics are CLI /
+# evaluation tools — not imported by diarize.py.
 pyannote.audio==3.4.0
 pyannote.core==5.0.0
-pyannote.database==5.1.3
-pyannote.metrics==3.2.1
 
-# Biometric Speaker Mapping
-speechbrain>=1.0.0
+# --- Biometric speaker mapping ---
+speechbrain==1.0.2
 
-# Cloud storage (R2 via S3-compatible API)
-boto3>=1.34.0
-botocore>=1.34.0
+# --- Cloud storage (R2 / S3) ---
+boto3==1.34.138
+botocore==1.34.138
 
-# Utilities
+# --- HTTP (for video/audio download + insights POST) ---
 requests==2.32.5
+
+# --- Numerics (soundfile returns numpy arrays) ---
 numpy==1.26.4
+
+# --- HuggingFace model download ---
+huggingface-hub==0.35.3
+
+# --- Misc small utils ---
 tqdm==4.67.1
 filelock>=3.12.2
-huggingface-hub==0.36.0

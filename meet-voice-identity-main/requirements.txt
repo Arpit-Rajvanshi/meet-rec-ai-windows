@@ -1,0 +1,6 @@
+torch
+torchaudio
+speechbrain
+runpod
+torchcodec
+soundfile
