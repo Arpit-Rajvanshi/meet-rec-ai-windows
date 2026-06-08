@@ -7,7 +7,8 @@ and transcript artifacts. Uses boto3 with the R2 endpoint URL.
 Environment variables expected:
     R2_ACCESS_KEY_ID
     R2_SECRET_ACCESS_KEY
-    R2_BUCKET          (defaults to "meet-recorder")
+    R2_BUCKET_NAME     (preferred name; falls back to R2_BUCKET if not set)
+    R2_BUCKET          (legacy name; still supported)
     R2_ENDPOINT_URL    (e.g. https://<account-id>.r2.cloudflarestorage.com)
     R2_REGION          (defaults to "auto" which R2 accepts)
 """
@@ -63,7 +64,8 @@ def _build_client():
 
 
 def _get_bucket() -> str:
-    return os.getenv("R2_BUCKET", DEFAULT_BUCKET)
+    # Prefer R2_BUCKET_NAME (canonical name), fall back to legacy R2_BUCKET
+    return os.getenv("R2_BUCKET_NAME") or os.getenv("R2_BUCKET", DEFAULT_BUCKET)
 
 
 def upload_file(local_path: str, key: str, content_type: Optional[str] = None) -> str:
