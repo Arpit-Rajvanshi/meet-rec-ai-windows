@@ -132,7 +132,7 @@ def run_pyannote(
 
     except Exception as e:
         logger.error(f"Pyannote failed: {e}", exc_info=True)
-        return []
+        raise
 
     finally:
         # Release Pyannote VRAM/RAM as soon as we're done

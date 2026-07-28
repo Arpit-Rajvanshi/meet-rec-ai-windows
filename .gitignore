@@ -1,11 +1,60 @@
+# Existing Project Ignores
 context.md
 .env
-.venv
-__pycache__
+.env.*
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
 *.pyc
+*.py[cod]
 *.wav
 *.mkv
 results/
-results/*
-venv/
-venv/*
+
+# Python & Testing Caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Python Build Artifacts
+build/
+dist/
+*.egg-info/
+
+# Model & Hugging Face Caches
+.cache/
+huggingface/
+hf_cache/
+
+# IDE Files
+.vscode/
+.idea/
+
+# OS Artifacts
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary Files
+*.tmp
+*.temp
+
+# Jupyter Notebook Checkpoints
+.ipynb_checkpoints/
+
+# Temporary Audit & PR Documentation
+AUDIT_MASTER_BUG_LIST.md
+*_REPORT.md
+*_NOTES.md
+*_ANALYSIS.md
+*_SUMMARY.md
+PR_DRAFT.md
+REVIEW.md

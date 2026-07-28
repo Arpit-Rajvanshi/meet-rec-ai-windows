@@ -323,6 +323,22 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
         max_speakers = input_data.get("max_speakers")
         num_speakers = input_data.get("num_speakers")
 
+        attendee_ids = input_data.get("attendee_ids")
+        if (
+            num_speakers is None
+            and min_speakers is None
+            and max_speakers is None
+            and isinstance(attendee_ids, list)
+            and len(attendee_ids) == 1
+            and isinstance(attendee_ids[0], str)
+            and attendee_ids[0].strip()
+        ):
+            num_speakers = 1
+            logger.info(
+                f"[{meeting_id}] Verified single-attendee recording ({attendee_ids[0].strip()}) "
+                "-> constraining num_speakers=1"
+            )
+
         upload_audio_to_r2_flag = input_data.get("upload_audio_to_r2", True)
         upload_transcript_to_r2_flag = input_data.get("upload_transcript_to_r2", True)
         return_inline = input_data.get("return_transcript_inline", True)
@@ -451,7 +467,12 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
             logger.info(f"[{meeting_id}] STAGE 6: Biometric speaker mapping (SpeechBrain)")
             yield {"status": "processing", "stage": "speaker_mapping", "meeting_id": meeting_id}
             speaker_mapping: Dict[str, str] = {}
+            voice_mapping_status = "completed"
+            voice_mapping_reason: Optional[str] = None
+
             if not os.path.exists(SEED_DB_PATH):
+                voice_mapping_status = "skipped"
+                voice_mapping_reason = f"Seed DB file not found at {SEED_DB_PATH}"
                 logger.warning(
                     f"[{meeting_id}] Seed DB not found at {SEED_DB_PATH}; "
                     "skipping voice mapping. Speakers will remain as SPEAKER_XX."
@@ -463,7 +484,12 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
                         diarized_segments=merged,
                         seed_db_path=SEED_DB_PATH,
                     )
+                    if not speaker_mapping:
+                        voice_mapping_status = "unmapped"
+                        voice_mapping_reason = "No speakers passed biometric confidence gates or database was empty"
                 except Exception as e:
+                    voice_mapping_status = "error"
+                    voice_mapping_reason = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
                     logger.warning(f"[{meeting_id}] Voice mapping failed (non-fatal): {e}", exc_info=True)
                 finally:
                     speaker_mapper_voice.unload()
@@ -521,6 +547,8 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
                     "speaker_ids": unique_speakers,
                     "audio_duration_seconds": round(audio_duration, 2),
                     "processing_time_seconds": round(processing_time, 2),
+                    "voice_mapping_status": voice_mapping_status,
+                    "voice_mapping_reason": voice_mapping_reason,
                 },
             }
             if return_inline:

@@ -184,7 +184,7 @@ def _match_speaker(
 
     # Gap vs the next person whose name differs from the top match
     next_best = next((r for r in results[1:] if r["name"] != top["name"]), None)
-    gap = top["score"] - next_best["score"] if next_best else 1.0
+    gap = top["score"] - next_best["score"] if next_best else HIGH_SCORE_GAP
 
     return top["name"], top["score"], gap, results[:3]
 
@@ -215,6 +215,7 @@ def map_speakers(
     logger.info(f"VoiceMapper: analyzing {len(unique_speakers)} speakers against {len(seed_db)} enrolled profiles")
 
     mapping: Dict[str, str] = {}
+    assigned_names: set = set()
 
     for speaker_id in unique_speakers:
         if not speaker_id or speaker_id == "UNKNOWN_SPEAKER":
@@ -239,12 +240,17 @@ def map_speakers(
         gate_a = score >= HIGH_SCORE_THRESHOLD and gap >= HIGH_SCORE_GAP
         gate_b = score >= MID_SCORE_THRESHOLD and gap >= MID_SCORE_GAP
 
-        if gate_a:
-            logger.info(f"VoiceMapper: {speaker_id} -> {name} (Gate A)")
-            mapping[speaker_id] = name
-        elif gate_b:
-            logger.info(f"VoiceMapper: {speaker_id} -> {name} (Gate B)")
-            mapping[speaker_id] = name
+        if gate_a or gate_b:
+            gate_label = "Gate A" if gate_a else "Gate B"
+            if name in assigned_names:
+                logger.info(
+                    f"VoiceMapper: {speaker_id} -> {name} passed {gate_label} "
+                    f"but is already assigned to another speaker; REJECTING duplicate"
+                )
+            else:
+                logger.info(f"VoiceMapper: {speaker_id} -> {name} ({gate_label})")
+                mapping[speaker_id] = name
+                assigned_names.add(name)
         else:
             logger.info(f"VoiceMapper: {speaker_id} REJECTED (below gates)")
 
