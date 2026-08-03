@@ -253,9 +253,10 @@ def _resolve_audio(
 
 def _call_insights(transcript_text: str, meeting_id: str) -> Optional[Dict[str, Any]]:
     """
+    TODO: Deprecated / unreferenced legacy helper.
     POST the finished transcript to meet-insights and return the parsed JSON.
     Non-fatal: logs warning and returns None on any failure.
-    Only fires when INSIGHTS_ENDPOINT_URL is set.
+    Only fires when INSIGHTS_ENDPOINT_URL is set (defaults to empty in production).
     """
     if not INSIGHTS_ENDPOINT_URL:
         logger.info("INSIGHTS_ENDPOINT_URL not set — skipping insights call")
@@ -323,21 +324,22 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
         max_speakers = input_data.get("max_speakers")
         num_speakers = input_data.get("num_speakers")
 
-        attendee_ids = input_data.get("attendee_ids")
+        raw_attendees = input_data.get("attendee_ids") or input_data.get("attendees")
         if (
             num_speakers is None
             and min_speakers is None
             and max_speakers is None
-            and isinstance(attendee_ids, list)
-            and len(attendee_ids) == 1
-            and isinstance(attendee_ids[0], str)
-            and attendee_ids[0].strip()
+            and isinstance(raw_attendees, list)
+            and len(raw_attendees) == 1
         ):
-            num_speakers = 1
-            logger.info(
-                f"[{meeting_id}] Verified single-attendee recording ({attendee_ids[0].strip()}) "
-                "-> constraining num_speakers=1"
-            )
+            first = raw_attendees[0]
+            first_id = first.get("id") if isinstance(first, dict) else first
+            if isinstance(first_id, str) and first_id.strip():
+                num_speakers = 1
+                logger.info(
+                    f"[{meeting_id}] Verified single-attendee recording ({first_id.strip()}) "
+                    "-> constraining num_speakers=1"
+                )
 
         upload_audio_to_r2_flag = input_data.get("upload_audio_to_r2", True)
         upload_transcript_to_r2_flag = input_data.get("upload_transcript_to_r2", True)
@@ -452,7 +454,9 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
 
             if pyannote_exc:
                 raise pyannote_exc[0]
-            pyannote_segments = pyannote_result["segments"]
+            pyannote_segments = pyannote_result.get("segments")
+            if not pyannote_segments:
+                raise RuntimeError("Diarization failed: Pyannote produced zero speaker segments")
             logger.info(
                 f"[{meeting_id}] Pyannote done: {len(pyannote_segments)} segments "
                 f"in {time.time() - stage4_start:.1f}s"
@@ -464,26 +468,41 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
             merged = diarize.assign_speakers_to_transcript(whisper_segments, pyannote_segments)
 
             # ---- Stage 6: biometric speaker mapping ----
-            logger.info(f"[{meeting_id}] STAGE 6: Biometric speaker mapping (SpeechBrain)")
+            logger.info(f"[{meeting_id}] STAGE 6: Biometric speaker mapping (SpeechBrain & Explainable Engine)")
             yield {"status": "processing", "stage": "speaker_mapping", "meeting_id": meeting_id}
             speaker_mapping: Dict[str, str] = {}
+            mapping_diagnostics: List[Dict[str, Any]] = []
+            adaptive_thresholds: Dict[str, Any] = {}
             voice_mapping_status = "completed"
             voice_mapping_reason: Optional[str] = None
 
-            if not os.path.exists(SEED_DB_PATH):
+            enrolled_profiles = input_data.get("enrolled_profiles") or input_data.get("voice_profiles")
+            expected_roster = input_data.get("expected_roster") or input_data.get("participants")
+            meeting_metadata = input_data.get("metadata") or {}
+
+            if not os.path.exists(SEED_DB_PATH) and not enrolled_profiles:
                 voice_mapping_status = "skipped"
-                voice_mapping_reason = f"Seed DB file not found at {SEED_DB_PATH}"
+                voice_mapping_reason = f"Seed DB file not found at {SEED_DB_PATH} and no dynamic enrolled_profiles provided"
                 logger.warning(
-                    f"[{meeting_id}] Seed DB not found at {SEED_DB_PATH}; "
+                    f"[{meeting_id}] Seed DB not found at {SEED_DB_PATH} and no enrolled_profiles in input; "
                     "skipping voice mapping. Speakers will remain as SPEAKER_XX."
                 )
             else:
                 try:
-                    speaker_mapping = speaker_mapper_voice.map_speakers(
+                    explainable_res = speaker_mapper_voice.map_speakers_explainable(
                         audio_path=audio_path,
                         diarized_segments=merged,
                         seed_db_path=SEED_DB_PATH,
+                        enrolled_profiles=enrolled_profiles if isinstance(enrolled_profiles, list) else None,
+                        expected_roster=expected_roster if isinstance(expected_roster, list) else None,
+                        meeting_metadata=meeting_metadata if isinstance(meeting_metadata, dict) else None,
                     )
+                    speaker_mapping = explainable_res.get("speaker_mapping", {})
+                    mapping_diagnostics = explainable_res.get("diagnostics", [])
+                    adaptive_thresholds = explainable_res.get("adaptive_thresholds", {})
+                    if "consolidated_segments" in explainable_res:
+                        merged = explainable_res["consolidated_segments"]
+
                     if not speaker_mapping:
                         voice_mapping_status = "unmapped"
                         voice_mapping_reason = "No speakers passed biometric confidence gates or database was empty"
@@ -539,7 +558,10 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
                 "meeting_id": meeting_id,
                 "input_kind": came_from,
                 "speaker_mapping": speaker_mapping,
+                "mapping_status": voice_mapping_status,
+                "mapping_reason": voice_mapping_reason,
                 "transcript_segments": merged,
+                "transcription": merged,
                 "metadata": {
                     "total_segments": len(merged),
                     "speakers_detected": len(unique_speakers),
@@ -549,6 +571,10 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
                     "processing_time_seconds": round(processing_time, 2),
                     "voice_mapping_status": voice_mapping_status,
                     "voice_mapping_reason": voice_mapping_reason,
+                    "mapping_status": voice_mapping_status,
+                    "mapping_reason": voice_mapping_reason,
+                    "diagnostics": mapping_diagnostics,
+                    "adaptive_thresholds": adaptive_thresholds,
                 },
             }
             if return_inline:

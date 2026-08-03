@@ -10,8 +10,26 @@ __pycache__/
 *.pyc
 *.py[cod]
 *.wav
+*.mp3
+*.mp4
 *.mkv
 results/
+
+# Model & Hugging Face Caches
+.cache/
+huggingface/
+hf_cache/
+pretrained_models/
+
+# Generated Output Artifacts & Benchmarks
+output.json
+diagnostics.json
+speaker_mapping.json
+e2e_summary.json
+whisper_segments.json
+benchmark_validation_results.json
+transcript.txt
+*.transcript.txt
 
 # Python & Testing Caches
 .pytest_cache/
@@ -26,11 +44,6 @@ htmlcov/
 build/
 dist/
 *.egg-info/
-
-# Model & Hugging Face Caches
-.cache/
-huggingface/
-hf_cache/
 
 # IDE Files
 .vscode/

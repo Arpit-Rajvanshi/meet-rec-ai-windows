@@ -33,8 +33,9 @@ def extract_audio(video_file: str, output_audio_file: Optional[str] = None) -> s
     Returns:
         Path to the extracted WAV.
     """
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError("ffmpeg not found in PATH")
+    ffmpeg_bin = os.getenv("FFMPEG_PATH", "ffmpeg")
+    if not shutil.which(ffmpeg_bin) and not os.path.exists(ffmpeg_bin):
+        raise RuntimeError(f"ffmpeg not found at '{ffmpeg_bin}' or in PATH")
     if not os.path.exists(video_file):
         raise FileNotFoundError(f"Video file not found: {video_file}")
 
@@ -42,7 +43,7 @@ def extract_audio(video_file: str, output_audio_file: Optional[str] = None) -> s
         output_audio_file = f"audio_{uuid.uuid4().hex}.wav"
 
     command = [
-        "ffmpeg", "-y", "-i", video_file,
+        ffmpeg_bin, "-y", "-i", video_file,
         "-ac", "1",          # mono
         "-ar", "16000",      # 16 kHz
         "-vn",               # drop video

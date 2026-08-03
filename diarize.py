@@ -18,6 +18,7 @@ import logging
 import os
 from typing import Dict, List, Optional
 
+import soundfile as sf
 import torch
 from dotenv import load_dotenv
 from pyannote.audio import Pipeline
@@ -103,16 +104,27 @@ def run_pyannote(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         pipeline.to(device)
 
+        data, sample_rate = sf.read(audio_path, dtype="float32")
+        waveform = torch.from_numpy(data)
+        if waveform.ndim == 1:
+            waveform = waveform.unsqueeze(0)
+        else:
+            waveform = waveform.transpose(0, 1)
+
+        audio_dict = {"waveform": waveform, "sample_rate": sample_rate}
+
         diarization = pipeline(
-            audio_path,
+            audio_dict,
             num_speakers=num_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
         )
 
+        annotation = getattr(diarization, "speaker_diarization", diarization)
+
         speaker_segments: List[Dict] = []
         unique_speakers = set()
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
             speaker_segments.append({
                 "start": float(turn.start),
                 "end": float(turn.end),
